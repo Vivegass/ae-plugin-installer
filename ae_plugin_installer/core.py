@@ -112,14 +112,6 @@ class Plan:
 
 # ---------------------------------------------------------------- archives
 
-def find_7z():
-    for p in (shutil.which("7z"), shutil.which("7za"),
-              r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe"):
-        if p and Path(p).exists():
-            return p
-    return None
-
-
 def is_archive(p: Path):
     name = p.name.lower()
     m = re.search(r"\.part(\d+)\.rar$", name)
@@ -128,19 +120,110 @@ def is_archive(p: Path):
     return p.suffix.lower() in ARCHIVE_EXT
 
 
-def extract(archive: Path, dest: Path, password=None):
-    sz = find_7z()
-    if sz:
-        cmd = [sz, "x", "-y", "-bso0", "-bsp0", f"-o{dest}", "-xr!*.dmg", "-xr!*.pkg",
-               f"-p{password or ''}", str(archive)]
-        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
-                           stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+class PasswordRequired(RuntimeError):
+    pass
+
+
+PASSWORD_RE = re.compile(r"password|passphrase|encrypted|парол", re.I)
+PYTHON_EXT = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
+
+
+@dataclass
+class Extractor:
+    """Внешний распаковщик. kind: 7z | unrar | winrar | tar."""
+    name: str
+    kind: str
+    exe: str
+
+    def handles(self, archive: Path):
+        return archive.suffix.lower() == ".rar" if self.kind == "unrar" else True
+
+    def command(self, archive: Path, dest: Path, password):
+        if self.kind == "7z":
+            return [self.exe, "x", "-y", "-bso0", "-bsp0", f"-o{dest}", "-xr!*.dmg", "-xr!*.pkg",
+                    f"-p{password or ''}", str(archive)]
+        if self.kind in ("unrar", "winrar"):
+            # -p- — не спрашивать пароль; -inul у WinRAR.exe — без окон с ошибками
+            quiet = ["-idq"] if self.kind == "unrar" else ["-ibck", "-inul"]
+            return [self.exe, "x", "-y", "-o+", *quiet, f"-p{password}" if password else "-p-",
+                    "-x*.dmg", "-x*.pkg", str(archive), str(dest) + "\\"]
+        return [self.exe, "-xf", str(archive), "-C", str(dest), "--exclude", "*.dmg", "--exclude", "*.pkg"]
+
+    def run(self, archive: Path, dest: Path, password=None):
+        r = subprocess.run(self.command(archive, dest, password), capture_output=True, text=True,
+                           errors="replace", stdin=subprocess.DEVNULL, creationflags=NO_WINDOW)
+        msg = (r.stderr or r.stdout).strip()
+        # у UnRAR/WinRAR код 11 — неверный или не указанный пароль
+        if r.returncode != 0 and (PASSWORD_RE.search(msg) or (self.kind in ("unrar", "winrar") and r.returncode == 11)):
+            if self.kind == "tar":  # tar пароли не поддерживает вовсе — спрашивать пароль бессмысленно
+                raise RuntimeError("архивы с паролем не поддерживает — установите 7-Zip или WinRAR")
+            raise PasswordRequired(msg)
         if r.returncode not in (0, 1):
-            msg = (r.stderr or r.stdout).strip()
-            if "password" in msg.lower():
-                msg = "архив защищён паролем — укажите --password"
-            raise RuntimeError(msg)
-        return
+            raise RuntimeError(msg.splitlines()[-1] if msg else f"код выхода {r.returncode}")
+
+
+def _registry_dirs(key, values):
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found = []
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, key, 0, winreg.KEY_READ | view) as k:
+                    for v in values:
+                        try:
+                            found.append(Path(winreg.QueryValueEx(k, v)[0]))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+    return [p.parent if p.suffix.lower() == ".exe" else p for p in found]
+
+
+def _first_existing(paths):
+    for p in paths:
+        if p and Path(p).is_file():
+            return str(p)
+    return None
+
+
+def find_extractors():
+    """Доступные распаковщики в порядке предпочтения."""
+    pf = [Path(os.environ.get(v, d)) for v, d in (("ProgramFiles", r"C:\Program Files"),
+                                                   ("ProgramFiles(x86)", r"C:\Program Files (x86)"))]
+    result = []
+    seven = _first_existing([shutil.which("7z"), shutil.which("7za")]
+                            + [d / "7z.exe" for d in _registry_dirs(r"SOFTWARE\7-Zip", ("Path64", "Path"))]
+                            + [d / "7-Zip" / "7z.exe" for d in pf])
+    if seven:
+        result.append(Extractor("7-Zip", "7z", seven))
+    # 7-Zip, вшитый в собранный exe (см. build_exe.py)
+    bundled = Path(getattr(sys, "_MEIPASS", "")) / "7zip" / "7z.exe"
+    if getattr(sys, "frozen", False) and bundled.is_file():
+        result.append(Extractor("7-Zip (встроенный)", "7z", str(bundled)))
+    winrar_dirs = _registry_dirs(r"SOFTWARE\WinRAR", ("exe64", "exe32")) + [d / "WinRAR" for d in pf]
+    unrar = _first_existing([d / "UnRAR.exe" for d in winrar_dirs])
+    if unrar:
+        result.append(Extractor("WinRAR (UnRAR)", "unrar", unrar))
+    winrar = _first_existing([d / "WinRAR.exe" for d in winrar_dirs])
+    if winrar:
+        result.append(Extractor("WinRAR", "winrar", winrar))
+    # tar.exe из Windows 10/11 (libarchive): zip, tar, rar, 7z — без паролей.
+    # Путь явный: в PATH может оказаться tar из Git, который rar не знает
+    tar = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "tar.exe"
+    if tar.is_file():
+        result.append(Extractor("tar (Windows)", "tar", str(tar)))
+    return result
+
+
+def extractor_summary():
+    names = [e.name for e in find_extractors() if e.kind != "unrar"]
+    return ", ".join(names) if names else "только zip и tar (встроенный Python)"
+
+
+def _extract_python(archive: Path, dest: Path, password=None):
     if archive.suffix.lower() == ".zip":
         with zipfile.ZipFile(archive) as z:
             for info in z.infolist():
@@ -149,12 +232,43 @@ def extract(archive: Path, dest: Path, password=None):
                         info.filename = info.filename.encode("cp437").decode("cp866")
                     except UnicodeError:
                         pass
-                z.extract(info, dest, pwd=password.encode() if password else None)
+                try:
+                    z.extract(info, dest, pwd=password.encode() if password else None)
+                except RuntimeError as e:  # zipfile сообщает о шифровании через RuntimeError
+                    raise PasswordRequired(str(e))
         return
-    try:
-        shutil.unpack_archive(str(archive), str(dest))
-    except (shutil.ReadError, ValueError):
-        raise RuntimeError("не найден 7-Zip — без него поддерживаются только zip и tar")
+    shutil.unpack_archive(str(archive), str(dest))
+
+
+def _reset_dir(d: Path):
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True, exist_ok=True)
+
+
+def extract(archive: Path, dest: Path, password=None, extractors=None):
+    """Распаковывает архив первым сработавшим распаковщиком. Возвращает его название."""
+    errors = []
+    tools = [e for e in (find_extractors() if extractors is None else extractors) if e.handles(archive)]
+    attempts = [(e.name, e.run) for e in tools]
+    if archive.suffix.lower() in PYTHON_EXT:
+        attempts.append(("Python", _extract_python))
+    for name, run in attempts:
+        _reset_dir(dest)  # после неудачной попытки могли остаться обрывки
+        try:
+            run(archive, dest, password)
+        except PasswordRequired:
+            raise RuntimeError("архив защищён паролем — нужен пароль" if not password
+                               else "неверный пароль от архива")
+        except (RuntimeError, OSError, zipfile.BadZipFile, shutil.ReadError, ValueError, NotImplementedError) as e:
+            errors.append(f"{name}: {e}")
+            continue
+        if any(dest.iterdir()):
+            return name
+        errors.append(f"{name}: ничего не распаковано (формат не поддерживается, архив с паролем или повреждён)")
+    if not attempts:
+        raise RuntimeError("нет распаковщика для этого формата — установите 7-Zip или WinRAR")
+    raise RuntimeError("; ".join(errors))
 
 
 def extract_nested(root: Path, password=None):

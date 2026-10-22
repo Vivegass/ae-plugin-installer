@@ -776,8 +776,7 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout(bar)
         h.setContentsMargins(12, 0, 6, 0)
         h.setSpacing(18)
-        z = core.find_7z()
-        h.addWidget(QLabel(f"7-Zip: {'найден' if z else 'не найден — только zip/tar'}"))
+        h.addWidget(QLabel(f"Распаковка: {core.extractor_summary()}"))
         if self.sandbox:
             h.addWidget(QLabel(f"Песочница: {self.sandbox}"))
         elif core.is_admin():
@@ -883,8 +882,9 @@ class MainWindow(QMainWindow):
                 shutil.rmtree(info, ignore_errors=True)
             return
         if plan is None:
-            if "пароль" in info:
-                pwd, ok = QInputDialog.getText(self, "Пароль", f"Архив «{e.path.name}» защищён паролем:",
+            if "нужен пароль" in info or "неверный пароль" in info:
+                prompt = "Неверный пароль, попробуйте ещё раз:" if "неверный" in info else "Архив защищён паролем:"
+                pwd, ok = QInputDialog.getText(self, "Пароль", f"«{e.path.name}»\n{prompt}",
                                                QLineEdit.EchoMode.Password)
                 if ok and pwd:
                     e.password = pwd

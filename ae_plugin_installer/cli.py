@@ -204,9 +204,7 @@ def run(args):
             return 0
         print(f"{C_YELLOW}Не удалось получить права администратора, пробую без них.{C_RESET}")
 
-    if not core.find_7z():
-        print(f"{C_YELLOW}7-Zip не найден: поддерживаются только zip и tar. "
-              f"Установите 7-Zip (7-zip.org) для rar/7z.{C_RESET}")
+    print(f"{C_DIM}Распаковка: {core.extractor_summary()}{C_RESET}")
 
     ui = ConsoleUI(args.yes)
     if not args.dry_run and not args.sandbox and core.ae_running():

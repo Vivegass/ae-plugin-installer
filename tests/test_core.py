@@ -242,6 +242,67 @@ def test_extract_zip_with_cyrillic_names(tmp_path):
     assert actions(plan) == [("copy", "Fx.aex", "abs", MEDIACORE)]
 
 
+# ---------------------------------------------------------------- распаковщики
+
+class FakeTool:
+    """Подставной распаковщик: behaviour — 'ok', 'fail', 'password' или 'empty'."""
+
+    def __init__(self, name, behaviour, only_rar=False):
+        self.name, self.behaviour, self.only_rar, self.called = name, behaviour, only_rar, False
+
+    def handles(self, archive):
+        return archive.suffix.lower() == ".rar" if self.only_rar else True
+
+    def run(self, archive, dest, password=None):
+        self.called = True
+        if self.behaviour == "fail":
+            raise RuntimeError("не смог")
+        if self.behaviour == "password":
+            raise core.PasswordRequired("Wrong password")
+        if self.behaviour == "ok":
+            (dest / "file.aex").write_bytes(b"x")
+
+
+def test_extract_falls_back_to_next_tool(tmp_path):
+    first, empty, second = FakeTool("A", "fail"), FakeTool("B", "empty"), FakeTool("C", "ok")
+    used = core.extract(tmp_path / "x.rar", tmp_path / "out", extractors=[first, empty, second])
+    assert used == "C" and first.called and empty.called
+    assert [p.name for p in (tmp_path / "out").iterdir()] == ["file.aex"]
+
+
+def test_password_error_stops_the_chain(tmp_path):
+    first, second = FakeTool("A", "password"), FakeTool("B", "ok")
+    with pytest.raises(RuntimeError, match="нужен пароль"):
+        core.extract(tmp_path / "x.7z", tmp_path / "out", extractors=[first, second])
+    assert not second.called
+    with pytest.raises(RuntimeError, match="неверный пароль"):
+        core.extract(tmp_path / "x.7z", tmp_path / "out", password="bad", extractors=[FakeTool("A", "password")])
+
+
+def test_rar_only_tool_is_skipped_for_other_formats(tmp_path):
+    unrar = FakeTool("UnRAR", "ok", only_rar=True)
+    with pytest.raises(RuntimeError, match="нет распаковщика"):
+        core.extract(tmp_path / "x.7z", tmp_path / "out", extractors=[unrar])
+    assert not unrar.called
+
+
+def test_zip_without_external_tools_uses_python(tmp_path):
+    archive = tmp_path / "p.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("Fx.aex", b"x")
+    assert core.extract(archive, tmp_path / "out", extractors=[]) == "Python"
+
+
+def test_extractor_command_lines():
+    a, d = Path(r"C:\in\p.rar"), Path(r"C:\out")
+    unrar = core.Extractor("UnRAR", "unrar", "UnRAR.exe")
+    assert "-p-" in unrar.command(a, d, None) and "-p123" in unrar.command(a, d, "123")
+    assert unrar.command(a, d, None)[-1] == "C:\\out\\"
+    assert "-inul" in core.Extractor("WinRAR", "winrar", "WinRAR.exe").command(a, d, None)
+    assert "-p" in core.Extractor("7-Zip", "7z", "7z.exe").command(a, d, None)  # пустой пароль: не спрашивать
+    assert not unrar.handles(Path("p.7z")) and unrar.handles(Path("p.RAR"))
+
+
 @pytest.mark.parametrize("name, expected", [
     ("plugin.rar", True), ("plugin.ZIP", True), ("a.part1.rar", True), ("a.part2.rar", False),
     ("readme.txt", False), ("plugin.aex", False),
