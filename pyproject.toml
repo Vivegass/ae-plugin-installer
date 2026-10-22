@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ae-plugin-installer"
+version = "1.0.0"
+description = "Установщик плагинов и скриптов After Effects из архивов по инструкции внутри архива"
+readme = "README.md"
+requires-python = ">=3.10"
+# ядро и консольная версия используют только стандартную библиотеку
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.6"]
+build = ["PySide6-Essentials>=6.6", "pyinstaller>=6.0", "pillow>=10.0"]
+dev = ["PySide6-Essentials>=6.6", "pyinstaller>=6.0", "pillow>=10.0", "pytest>=8.0"]
+
+[project.scripts]
+ae-plugin-installer-cli = "ae_plugin_installer.cli:main"
+
+[project.gui-scripts]
+ae-plugin-installer = "ae_plugin_installer.gui:main"
+
+[tool.setuptools]
+packages = ["ae_plugin_installer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

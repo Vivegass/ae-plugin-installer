@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# сборка exe
+build/
+dist/
+*.spec
+
+# журналы установок
+install_log.txt
+
+# архивы с плагинами — не для репозитория
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.tgz
+*.bz2
+*.xz
+*.cab
