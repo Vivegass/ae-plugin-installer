@@ -28,12 +28,14 @@ MEDIACORE = r"C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore"
 CEP_EXT = r"C:\Program Files (x86)\Common Files\Adobe\CEP\extensions"
 
 SPAM_RE = re.compile(
-    r"https?://|t\.me/|telegram|cgperec|cgplugin|subscribe|подпис|бесплатн|donate|usdt|website|сайт:|={5,}|\ufffd{3,}",
+    r"https?://|t\.me/|telegram|cgperec|cgplugin|subscribe|подпис|бесплатн|donate|usdt|website|сайт:|={5,}|_{5,}|\ufffd{3,}"
+    r"|^\s*[\w.-]+\.(?:ru|com|net|org|io|me|cc|su)/?\s*$",  # строка-подпись вида «poshock.ru»
     re.I)
 STEP_RE = re.compile(r"^\s*(?:step|шаг)?\s*(\d{1,2})\s*[.)\]:]+(?=\s|$)", re.I)
 VERB_RE = re.compile(
-    r"cop(?:y|ie)|move|paste|place|put|drag|install|extract|unzip|run|launch|"
-    r"скопир|копир|перемест|вставь|помест|перетащ|установ|распак|запуст", re.I)
+    r"cop(?:y|ie)|move|paste|place|put|drag|install|extract|unzip|run|launch|execute|double.?click|"
+    # основы с учётом чередований: «запуст-ите» / «запуск-аем», «установ-ите» / «устанавл-иваем»
+    r"скопир|копир|перемест|вставь|помест|перетащ|установ|устанавл|ставим|распак|запуст|запуск", re.I)
 LABEL_RE = re.compile(r"^\s*(win(?:dows)?|pc|mac(?:\s*os)?(?:\s*x)?|osx)\s*[:\-–]\s*", re.I)
 # обратная кавычка — граница пути: инструкции бывают в Markdown, `C:\...\MediaCore`
 ABS_RE = re.compile(r"(?:%[A-Za-z_]+%|(?<![A-Za-z])[A-Za-z]:)[\\/][^\r\n<>|*?\"`]*")

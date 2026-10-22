@@ -156,6 +156,22 @@ def test_installer_then_manual_step_then_copy_in_order(tmp_path):
     assert not plan.steps[1].actions  # шаг 2 — ручной
 
 
+def test_russian_verb_forms_run_installer(tmp_path):
+    # ReelSmart Motion Blur: «Запускаем … устанавливаем» — не «запустите/установите»
+    plan = plan_for(tmp_path, {
+        "RSMB 7.0.0/Readme.txt": "1. Отключаем антивирусы, деинсталлируем предыдущие версии плагина.\n\n"
+                                 "2. Запускаем Setup.exe и устанавливаем плагин. \n\n"
+                                 "3. После завершения установки можно пользоваться.\n"
+                                 "\tВ After Effects плагин находится здесь: \"Effect - RE:Vision Plug-ins - RSMB\".\n\n"
+                                 "__________________________\n\nPooShock\nposhock.ru\n",
+        "RSMB 7.0.0/Setup.exe": b"x",
+    })
+    assert [s.num for s in plan.steps] == [1, 2, 3]
+    assert actions(plan) == [("run", "Setup.exe", None, None)]
+    assert not plan.steps[0].actions  # шаг 1 — ручной, перед запуском установщика
+    assert "poshock.ru" not in plan.steps[2].text and "____" not in plan.steps[2].text
+
+
 def test_reg_file_and_cep_panel(tmp_path):
     plan = plan_for(tmp_path, {
         "kit/installation.txt": "1). add keys.reg\n\n"
