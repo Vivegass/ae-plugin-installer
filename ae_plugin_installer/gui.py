@@ -25,10 +25,10 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRectF, QRunnable, Qt, QThread, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRectF, QRunnable, QSettings, Qt, QThread, QThreadPool, Signal
 from PySide6.QtGui import (QColor, QFont, QIcon, QPainter, QPainterPath, QPalette, QPen,
                            QPixmap)
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout,
                                QHeaderView, QInputDialog, QLabel, QLineEdit, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton, QSplitter,
                                QStackedWidget, QTextBrowser, QTreeWidget, QTreeWidgetItem,
@@ -85,6 +85,11 @@ QPushButton#Flat {{ border: none; border-radius: 3px; padding: 3px 8px; color: #
     font-weight: normal; min-height: 16px; }}
 QPushButton#Flat:hover {{ background: #333333; color: #ffffff; }}
 QPushButton#Flat:disabled {{ color: #555555; background: transparent; }}
+QCheckBox {{ color: {C['text']}; spacing: 6px; }}
+QCheckBox::indicator {{ width: 12px; height: 12px; border: 1px solid #6e6e6e; border-radius: 2px;
+    background: #1b1b1b; }}
+QCheckBox::indicator:hover {{ border-color: #a0a0a0; }}
+QCheckBox::indicator:checked {{ background: {C['button']}; border-color: {C['button']}; }}
 QPushButton#Tool {{ border: none; border-radius: 3px; padding: 0; min-width: 26px; max-width: 26px;
     min-height: 24px; max-height: 24px; }}
 QPushButton#Tool:hover {{ background: #333333; }}
@@ -123,6 +128,7 @@ STATUS = {
     "partial": ("С ошибками", C["red"]),
 }
 INSTALLABLE = {"ready", "installed", "partial"}
+HOST_TITLES = {"ae": "After Effects / Premiere", "ofx": "OFX — DaVinci Resolve, Vegas, Nuke…"}
 
 
 # ---------------------------------------------------------------- graphics
@@ -660,9 +666,33 @@ class MainWindow(QMainWindow):
             self.ae_combo.addItem("After Effects не найден", [])
             self.ae_combo.setEnabled(False)
         self.ae_combo.currentIndexChanged.connect(lambda _: self.render_plan())
+
+        # OFX-версии плагинов (Resolve, Vegas, Nuke…): по умолчанию — если такие программы есть
+        self.settings = QSettings("vvvkt", "AE Plugin Installer")
+        self.ofx_box = QCheckBox("OFX-плагины")
+        self.ofx_box.setToolTip("Ставить и OFX-версии плагинов — для DaVinci Resolve, Vegas, Nuke и др.\n"
+                                f"Папка: {core.OFX_DIR}")
+        self.ofx_box.setChecked(self.settings.value("install_ofx", core.ofx_hosts_installed(), type=bool))
+        self.ofx_box.toggled.connect(self._on_ofx_toggled)
+        h.addWidget(self.ofx_box)
+        h.addSpacing(14)
         h.addWidget(lbl)
         h.addWidget(self.ae_combo)
         return bar
+
+    def hosts(self):
+        return set(core.HOSTS) if self.ofx_box.isChecked() else {"ae"}
+
+    def _status_for(self, plan):
+        return "ready" if plan.only(self.hosts()).actions else "empty"
+
+    def _on_ofx_toggled(self, on):
+        self.settings.setValue("install_ofx", on)
+        for e in self.entries.values():
+            if e.status in ("ready", "empty"):  # установленные и с ошибками не трогаем
+                e.status = self._status_for(e.plan)
+                self._update_item(e)
+        self.render_plan()
 
     def _build_archives_panel(self):
         p = self.archives_panel = Panel("Архивы")
@@ -894,7 +924,7 @@ class MainWindow(QMainWindow):
             self.log("error", f"{e.path.name}: не удалось распаковать — {info}")
         else:
             e.plan, e.tmp = plan, Path(info)
-            e.status = "ready" if plan.actions else "empty"
+            e.status = self._status_for(plan)
         self._update_item(e)
         self._refresh_buttons()
         if self._current() is e:
@@ -986,34 +1016,56 @@ class MainWindow(QMainWindow):
 
         plan = e.plan
         roots = self.ae_roots()
-        if plan.instruction:
+        hosts = self.hosts()
+        if len(plan.instructions) == 1:
             rel = plan.instruction.relative_to(plan.root)
             out.append(f"<div style='color:{C['dim']}'>Инструкция: {H(str(rel))}</div>")
+        elif plan.instructions:
+            out.append(f"<div style='color:{C['dim']}'>Инструкций: {len(plan.instructions)} — "
+                       "у каждой свой раздел</div>")
         for w in plan.warnings:
             out.append(f"<div style='color:{C['yellow']}; margin-top:4px'>⚠ {H(w)}</div>")
 
-        n_actions = len(plan.actions)
-        n_manual = sum(1 for s in plan.steps if not s.actions and s.text)
+        active = plan.only(hosts)
+        n_actions = len(active.actions)
+        n_manual = sum(1 for s in active.steps if not s.actions and s.text)
+        n_skipped = len(plan.actions) - n_actions
+        section = object()
         for step in plan.steps:
+            off = step.host not in hosts
+            if len(plan.instructions) > 1 and step.source != section:
+                section = step.source
+                rel = step.source.relative_to(plan.root) if step.source else "по типу файлов"
+                out.append(f"<div style='margin-top:16px; color:{C['bright']}; font-weight:600'>"
+                           f"{HOST_TITLES[step.host]} <span style='color:{C['dim']}; font-weight:normal'>"
+                           f"— {H(str(rel))}</span></div>")
             cells = []
             label = (f"ШАГ {step.num}" if step.num is not None
                      else "ИНСТРУКЦИЯ" if step.text else "ПО ТИПУ ФАЙЛОВ")
-            cells.append(f"<div style='color:{C['hot']}; font-size:8pt; font-weight:600'>{label}</div>")
+            if step.host == "ofx":
+                label = "OFX · " + label
+            cells.append(f"<div style='color:{C['dim'] if off else C['hot']}; font-size:8pt; "
+                         f"font-weight:600'>{label}</div>")
+            if off and (step.actions or step.text):
+                cells.append(f"<div style='color:{C['yellow']}; margin-top:4px'>OFX-плагины выключены — "
+                             "этот шаг не выполняется (галочка «OFX-плагины» вверху)</div>")
             if step.text:
                 text = "<br>".join(H(l) for l in step.text.splitlines() if l.strip())
-                cells.append(f"<div style='color:#9d9d9d; margin-top:4px'>{text}</div>")
+                cells.append(f"<div style='color:{'#6f6f6f' if off else '#9d9d9d'}; margin-top:4px'>{text}</div>")
             for a in step.actions:
                 cells.append(self._action_html(a, roots))
-            if not step.actions and step.text:
+            if not step.actions and step.text and not off:
                 cells.append(f"<div style='color:{C['yellow']}; margin-top:8px'>✋ Этот шаг нужно сделать вручную</div>")
             out.append("<table width='100%' cellspacing='0' cellpadding='10' "
-                       "style='margin-top:10px; background:#272727'>"
+                       f"style='margin-top:10px; background:{'#212121' if off else '#272727'}'>"
                        f"<tr><td>{''.join(cells)}</td></tr></table>")
         self.plan_view.setHtml("".join(out))
         self.plan_view.verticalScrollBar().setValue(0)
         parts = [plural(n_actions, "действие", "действия", "действий") if n_actions else "нет действий"]
         if n_manual:
             parts.append(plural(n_manual, "ручной шаг", "ручных шага", "ручных шагов"))
+        if n_skipped:
+            parts.append(f"OFX выключен: {n_skipped} пропуск.")
         self.plan_summary.setText(" · ".join(parts))
 
     def _action_html(self, a, roots):
@@ -1097,10 +1149,14 @@ class MainWindow(QMainWindow):
         self.start_install([e for e in self.entries.values() if e.status == "ready"])
 
     def start_install(self, entries):
+        hosts = self.hosts()
+        # без включённых OFX-плагинов OFX-часть плана в установку не уходит
+        entries = [e for e in entries if e.plan and e.plan.only(hosts).actions]
         if self.session or not entries:
             return
+        plans = [e.plan.only(hosts) for e in entries]
         roots = self.ae_roots()
-        if any(a.dest and a.dest.kind == "ae" for e in entries for a in e.plan.actions) and not roots:
+        if any(a.dest and a.dest.kind == "ae" for p in plans for a in p.actions) and not roots:
             self.message_box("After Effects не найден",
                              "Часть файлов нужно положить в папку After Effects, но он не найден.", QMessageBox.Icon.Warning)
             return
@@ -1122,7 +1178,7 @@ class MainWindow(QMainWindow):
         if elevate:
             self.log("info", "Запрашиваю права администратора…")
 
-        s = self.session = InstallSession([e.plan.to_dict() for e in entries], [str(r) for r in roots],
+        s = self.session = InstallSession([p.to_dict() for p in plans], [str(r) for r in roots],
                                           self.sandbox, elevate)
         s.message.connect(self._on_message)
         s.archive_started.connect(self._on_archive_started)

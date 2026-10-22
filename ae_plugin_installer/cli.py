@@ -89,13 +89,24 @@ def describe(a: Action, plan: Plan, ae_roots):
     return "\n      ".join(lines)
 
 
-def print_plan(plan: Plan, ae_roots):
+HOST_TITLES = {"ae": "After Effects / Premiere", "ofx": "OFX (DaVinci Resolve, Vegas, Nuke…)"}
+
+
+def print_plan(plan: Plan, ae_roots, hosts=core.HOSTS):
     print(f"\n{C_CYAN}{C_BOLD}══ {plan.archive.name}{C_RESET}")
-    if plan.instruction:
+    if len(plan.instructions) == 1:
         print(f"{C_DIM}Инструкция: {plan.instruction.relative_to(plan.root)}{C_RESET}")
     for w in plan.warnings:
         print(f"{C_YELLOW}⚠ {w}{C_RESET}")
+    section = None
     for step in plan.steps:
+        # несколько инструкций (Win\AE\…, Win\OFX\…) — у каждой свой раздел
+        if len(plan.instructions) > 1 and step.source != section:
+            section = step.source
+            rel = section.relative_to(plan.root) if section else "по типу файлов"
+            print(f"\n  {C_BOLD}── {HOST_TITLES[step.host]}{C_RESET} {C_DIM}{rel}{C_RESET}")
+        if step.host not in hosts and step.actions:
+            print(f"  {C_DIM}(OFX-плагины выключены — этот шаг пропускается; включите ключом --ofx){C_RESET}")
         if step.text:
             print(f"{C_DIM}{indent(step.text)}{C_RESET}")
         if step.actions:
@@ -173,6 +184,11 @@ def main(argv=None):
     ap.add_argument("--ae", help="версия After Effects: 2026, 2025... или all")
     ap.add_argument("--password", help="пароль от архивов")
     ap.add_argument("--sandbox", help="копировать в эту папку вместо реальных (для проверки)")
+    ofx = ap.add_mutually_exclusive_group()
+    ofx.add_argument("--ofx", dest="ofx", action="store_true", default=None,
+                     help="ставить и OFX-версии плагинов (Resolve, Vegas, Nuke…)")
+    ofx.add_argument("--no-ofx", dest="ofx", action="store_false",
+                     help="не ставить OFX-версии (по умолчанию ставятся, если есть папка OFX-плагинов)")
     ap.add_argument("--pause", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
@@ -201,12 +217,19 @@ def run(args):
         for opt in ("ae", "password"):
             if getattr(args, opt):
                 argv += [f"--{opt}", getattr(args, opt)]
+        if args.ofx is not None:
+            argv.append("--ofx" if args.ofx else "--no-ofx")
         if relaunch_as_admin(argv):
             args.pause = False
             return 0
         print(f"{C_YELLOW}Не удалось получить права администратора, пробую без них.{C_RESET}")
 
     print(f"{C_DIM}Распаковка: {core.extractor_summary()}{C_RESET}")
+    want_ofx = core.ofx_hosts_installed() if args.ofx is None else args.ofx
+    hosts = set(core.HOSTS) if want_ofx else {"ae"}
+    print(f"{C_DIM}OFX-плагины: {'ставятся' if want_ofx else 'не ставятся'} "
+          f"({'--ofx' if args.ofx else '--no-ofx' if args.ofx is False else 'по наличию ' + core.OFX_DIR})"
+          f"{C_RESET}")
 
     ui = ConsoleUI(args.yes)
     if not args.dry_run and not args.sandbox and core.ae_running():
@@ -226,10 +249,12 @@ def run(args):
                 print(f"\n{C_RED}✗ {archive.name}: не удалось распаковать — {e}{C_RESET}")
                 results.append((archive.name, "ошибка распаковки"))
                 continue
-            plan = core.analyze(archive, root)
-            print_plan(plan, choose_ae(args))
+            full_plan = core.analyze(archive, root)
+            print_plan(full_plan, choose_ae(args), hosts)
+            plan = full_plan.only(hosts)
             if not plan.actions:
-                results.append((archive.name, "нечего устанавливать"))
+                status = "только OFX (--ofx)" if full_plan.actions else "нечего устанавливать"
+                results.append((archive.name, status))
                 continue
             if args.dry_run:
                 results.append((archive.name, "план"))

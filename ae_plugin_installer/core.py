@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 ARCHIVE_EXT = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".cab"}
@@ -26,6 +26,11 @@ PLATFORM_DIRS = MAC_DIRS | {"win", "windows", "win64", "x64", "pc"}
 
 MEDIACORE = r"C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore"
 CEP_EXT = r"C:\Program Files (x86)\Common Files\Adobe\CEP\extensions"
+# общая папка OFX-плагинов: DaVinci Resolve, Vegas, Nuke, Fusion и др.
+OFX_DIR = str(Path(os.environ.get("CommonProgramFiles", r"C:\Program Files\Common Files")) / "OFX" / "Plugins")
+OFX_FOLDER_NAMES = {"ofx", "openfx", "resolve", "davinci", "davinci resolve", "vegas", "nuke", "fusion"}
+OFX_TEXT_RE = re.compile(r"[\\/]OFX[\\/]|openfx|\.ofx\.bundle", re.I)
+HOSTS = ("ae", "ofx")
 
 SPAM_RE = re.compile(
     r"https?://|t\.me/|telegram|cgperec|cgplugin|subscribe|подпис|бесплатн|donate|usdt|website|сайт:|={5,}|_{5,}|\ufffd{3,}"
@@ -78,26 +83,40 @@ class Step:
     num: int | None      # None — текст без номера (вступление или вся инструкция целиком)
     text: str
     actions: list = field(default_factory=list)
+    host: str = "ae"     # "ae" — After Effects/Premiere, "ofx" — OFX-версия (Resolve, Vegas, Nuke…)
+    source: Path | None = None  # инструкция, из которой взят шаг
 
 
 @dataclass
 class Plan:
     archive: Path
     root: Path
-    instruction: Path | None
+    instruction: Path | None   # первая из использованных инструкций
     steps: list
     warnings: list = field(default_factory=list)
+    instructions: list = field(default_factory=list)  # все использованные инструкции
 
     @property
     def actions(self):
         return [a for s in self.steps for a in s.actions]
 
+    @property
+    def hosts(self):
+        """Для каких программ в плане есть действия."""
+        return {s.host for s in self.steps if s.actions}
+
+    def only(self, hosts):
+        """План только с шагами для выбранных программ (например, без OFX-части)."""
+        return replace(self, steps=[s for s in self.steps if s.host in hosts])
+
     def to_dict(self):
         return {
             "archive": str(self.archive), "root": str(self.root),
             "instruction": str(self.instruction) if self.instruction else None,
+            "instructions": [str(p) for p in self.instructions],
             "warnings": self.warnings,
-            "steps": [{"num": s.num, "text": s.text,
+            "steps": [{"num": s.num, "text": s.text, "host": s.host,
+                       "source": str(s.source) if s.source else None,
                        "actions": [{"kind": a.kind, "item": str(a.item),
                                     "dest": vars(a.dest) if a.dest else None} for a in s.actions]}
                       for s in self.steps],
@@ -107,10 +126,12 @@ class Plan:
     def from_dict(cls, d):
         steps = [Step(s["num"], s["text"],
                       [Action(a["kind"], Path(a["item"]), Dest(**a["dest"]) if a["dest"] else None)
-                       for a in s["actions"]])
+                       for a in s["actions"]],
+                      s.get("host", "ae"), Path(s["source"]) if s.get("source") else None)
                  for s in d["steps"]]
         return cls(Path(d["archive"]), Path(d["root"]),
-                   Path(d["instruction"]) if d["instruction"] else None, steps, d["warnings"])
+                   Path(d["instruction"]) if d["instruction"] else None, steps, d["warnings"],
+                   [Path(p) for p in d.get("instructions", [])])
 
 
 # ---------------------------------------------------------------- archives
@@ -308,6 +329,12 @@ def read_text(p: Path):
 
 
 def find_instructions(root: Path):
+    """Похожие на инструкцию файлы, лучшие первыми."""
+    return [p for _, p in instruction_candidates(root)]
+
+
+def instruction_candidates(root: Path):
+    """[(оценка, путь)] по убыванию оценки; при равенстве — лежащие ближе к корню."""
     good = re.compile(r"install|установ|инсталл|инструк|readme|read|how|setup|guide|manual", re.I)
     bad = re.compile(r"licen|лиценз|notice|changelog|eula|credits|third", re.I)
     # txt внутри самого плагина (CEP-панели, встроенные библиотеки) — не инструкция по установке
@@ -335,7 +362,32 @@ def find_instructions(root: Path):
         if score:
             found.append((score, -len(rel.parts), p))
     found.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    return [p for _, _, p in found]
+    return [(score, p) for score, _, p in found]
+
+
+def choose_instructions(root: Path):
+    """Все равноценные лучшие инструкции (например, Win\\AE\\Install.txt и Win\\OFX\\Install.txt),
+    без повторов по тексту. Возвращает (выбранные, остальные найденные)."""
+    cands = instruction_candidates(root)
+    if not cands:
+        return [], []
+    best = cands[0][0]
+    chosen, seen = [], set()
+    for score, p in cands:
+        text = read_text(p).strip()
+        if score == best and text not in seen:
+            seen.add(text)
+            chosen.append(p)
+    chosen.sort(key=lambda p: (instruction_host(p, root) == "ofx", len(p.parts), str(p).lower()))
+    return chosen, [p for _, p in cands if p not in chosen]
+
+
+def instruction_host(instr: Path, root: Path):
+    """'ofx', если инструкция для OFX-версии плагина (лежит в папке OFX/Resolve/…
+    или ведёт в ...\\OFX\\...), иначе 'ae'."""
+    if any(part.lower() in OFX_FOLDER_NAMES for part in instr.relative_to(root).parts[:-1]):
+        return "ofx"
+    return "ofx" if OFX_TEXT_RE.search(read_text(instr)) else "ae"
 
 
 def collect_items(root: Path):
@@ -463,8 +515,20 @@ def is_cep_folder(p: Path):
     return p.is_dir() and (p / "CSXS" / "manifest.xml").exists()
 
 
+def is_ofx_item(p: Path):
+    """OFX-плагин: папка *.ofx.bundle или файл *.ofx."""
+    name = p.name.lower()
+    return name.endswith(".ofx.bundle") or (p.is_file() and name.endswith(".ofx"))
+
+
+def item_host(p: Path):
+    return "ofx" if is_ofx_item(p) else "ae"
+
+
 def default_dest(item: Path):
     ext = item.suffix.lower() if item.is_file() else ""
+    if is_ofx_item(item):
+        return Dest("abs", OFX_DIR, guessed=True)
     if is_cep_folder(item) or ext == ".zxp":
         return Dest("abs", CEP_EXT, guessed=True)
     if ext in (".jsx", ".jsxbin"):
@@ -488,60 +552,24 @@ def action_kind(item: Path):
 
 
 def auto_payload(root: Path, items):
-    cep = [it for it in items if is_cep_folder(it)]
-    files = [it for it in items if it.is_file() and it.suffix.lower() in PLUGIN_EXT
-             and not any(c in it.parents for c in cep)]
-    return cep + files
+    bundles = [it for it in items if is_cep_folder(it) or (it.is_dir() and is_ofx_item(it))]
+    files = [it for it in items if it.is_file() and (it.suffix.lower() in PLUGIN_EXT or is_ofx_item(it))
+             and not any(b in it.parents for b in bundles)]
+    return bundles + files
 
 
 def analyze(archive: Path, root: Path):
     """Строит план установки для уже распакованного в root архива."""
-    instr = find_instructions(root)
+    chosen, others = choose_instructions(root)
     items = collect_items(root)
-    plan = Plan(archive, root, instr[0] if instr else None, [])
-    if len(instr) > 1:
-        plan.warnings.append("найдено несколько инструкций, использую первую; остальные: "
-                             + ", ".join(str(p.relative_to(root)) for p in instr[1:]))
+    plan = Plan(archive, root, chosen[0] if chosen else None, [], instructions=chosen)
+    if others:
+        plan.warnings.append("есть и другие текстовые файлы, они не используются: "
+                             + ", ".join(str(p.relative_to(root)) for p in others))
     used = set()
 
-    if plan.instruction:
-        steps = split_steps(read_text(plan.instruction))
-        numbered = any(s.num is not None for s in steps)
-        for step in steps:
-            paths = find_paths(step.text)
-            mentions = find_mentions(step.text, items, [(s, e) for s, e, _ in paths])
-            has_verb = bool(VERB_RE.search(step.text))
-            for pos, it in mentions:
-                kind = action_kind(it)
-                if kind == "run":
-                    if not has_verb or UNINSTALL_RE.search(it.name):
-                        continue
-                    step.actions.append(Action("run", it))
-                elif kind == "reg":
-                    step.actions.append(Action("reg", it))
-                else:
-                    after = [d for s, _, d in paths if s > pos]
-                    before = [d for s, _, d in paths if s < pos]
-                    dest = after[0] if after else (before[-1] if before else None)
-                    if dest is None:
-                        # «run install-as-admin on Mac» — это не для Windows
-                        if not has_verb or it in used or "mac" in step.text[pos:pos + len(it.name) + 12].lower():
-                            continue
-                        dest = default_dest(it)
-                        if dest is None:
-                            plan.warnings.append(f"не понял, куда копировать «{it.name}» — пропускаю")
-                            continue
-                    step.actions.append(Action(kind, it, dest))
-                used.add(it)
-            # «скопируйте плагин в C:\...» без имени файла — берём сам плагин
-            if not mentions and paths and has_verb:
-                for it in auto_payload(root, items):
-                    if it not in used:
-                        step.actions.append(Action(action_kind(it), it, paths[0][2]))
-                        used.add(it)
-        if numbered:  # вводный текст до «1.» без действий — просто заголовок
-            steps = [s for s in steps if s.num is not None or s.actions]
-        plan.steps = steps
+    for instr in chosen:
+        plan.steps += _instruction_steps(instr, root, items, used, plan)
 
     if not plan.actions:
         payload = auto_payload(root, items)
@@ -549,17 +577,67 @@ def analyze(archive: Path, root: Path):
             plan.warnings.append("в инструкции не нашлось понятных действий — ставлю по типу файлов")
         else:
             plan.warnings.append("инструкция не найдена — ставлю по типу файлов")
-        step = Step(None, "")
-        for it in payload:
-            d = default_dest(it)
-            if d:
-                step.actions.append(Action(action_kind(it), it, d))
-        plan.steps.append(step)
+        for host in HOSTS:
+            step = Step(None, "", host=host)
+            for it in payload:
+                d = default_dest(it)
+                if d and item_host(it) == host:
+                    step.actions.append(Action(action_kind(it), it, d))
+            if step.actions:
+                plan.steps.append(step)
         # без инструкции установщик сами не запускаем — только сообщаем, что он есть
         for it in unmentioned_installers(items, payload):
             plan.warnings.append(f"в архиве есть установщик «{it.relative_to(root)}» — инструкции к нему нет; "
                                  "если это установщик плагина, запустите его вручную («Открыть распакованное»)")
     return plan
+
+
+def _instruction_steps(instr: Path, root: Path, items, used, plan):
+    """Шаги одной инструкции. Файлы ищутся сначала рядом с ней (Win\\AE\\… для AE-инструкции,
+    Win\\OFX\\… для OFX), а если там не нашлось — во всём архиве."""
+    host = instruction_host(instr, root)
+    scope = [it for it in items if instr.parent in it.parents]
+    steps = split_steps(read_text(instr))
+    numbered = any(s.num is not None for s in steps)
+    for step in steps:
+        step.host, step.source = host, instr
+        paths = find_paths(step.text)
+        masks = [(s, e) for s, e, _ in paths]
+        mentions = find_mentions(step.text, scope, masks)
+        if not mentions and len(scope) != len(items):
+            mentions = find_mentions(step.text, items, masks)
+        has_verb = bool(VERB_RE.search(step.text))
+        for pos, it in mentions:
+            kind = action_kind(it)
+            if kind == "run":
+                if not has_verb or UNINSTALL_RE.search(it.name):
+                    continue
+                step.actions.append(Action("run", it))
+            elif kind == "reg":
+                step.actions.append(Action("reg", it))
+            else:
+                after = [d for s, _, d in paths if s > pos]
+                before = [d for s, _, d in paths if s < pos]
+                dest = after[0] if after else (before[-1] if before else None)
+                if dest is None:
+                    # «run install-as-admin on Mac» — это не для Windows
+                    if not has_verb or it in used or "mac" in step.text[pos:pos + len(it.name) + 12].lower():
+                        continue
+                    dest = default_dest(it)
+                    if dest is None:
+                        plan.warnings.append(f"не понял, куда копировать «{it.name}» — пропускаю")
+                        continue
+                step.actions.append(Action(kind, it, dest))
+            used.add(it)
+        # «скопируйте плагин в C:\...» без имени файла — берём сам плагин (из папки этой инструкции)
+        if not mentions and paths and has_verb:
+            for it in auto_payload(root, scope or items):
+                if it not in used:
+                    step.actions.append(Action(action_kind(it), it, paths[0][2]))
+                    used.add(it)
+    if numbered:  # вводный текст до «1.» без действий — просто заголовок
+        steps = [s for s in steps if s.num is not None or s.actions]
+    return steps
 
 
 def unmentioned_installers(items, payload, limit=5):
@@ -587,8 +665,14 @@ def action_targets(a: Action, ae_roots):
     «Папки ещё нет» показывается в плане: так видно и опечатку в пути из инструкции."""
     if not a.dest:
         return []
-    return [(t, a.kind == "copy" and (t / a.item.name).exists(), "adobe" not in str(t).lower(), not t.exists())
+    return [(t, a.kind == "copy" and (t / a.item.name).exists(),
+             not any(k in str(t).lower() for k in ("adobe", "ofx")), not t.exists())
             for t in a.dest.resolve(ae_roots)]
+
+
+def ofx_hosts_installed():
+    """Есть ли на компьютере OFX-программы (по общей папке OFX-плагинов)."""
+    return Path(OFX_DIR).is_dir()
 
 
 def remaining_manual(plan: Plan):

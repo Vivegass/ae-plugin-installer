@@ -200,6 +200,62 @@ def test_mac_only_item_is_skipped_quietly(tmp_path):
     assert plan.warnings == []  # нет ни «не понял, куда копировать», ни «несколько инструкций»
 
 
+# ---------------------------------------------------------------- несколько инструкций, OFX
+
+VOXEL = {  # как в Voxel Sorter: отдельные инструкции для AE и для OFX
+    "V/Win/AE/Install.txt": "AE\nCopy Voxelsort.aex to " + MEDIACORE + SPAM,
+    "V/Win/AE/Voxelsort.aex": b"aex",
+    "V/Win/OFX/Install.txt": "\nOFX\nCopy Voxelsort.ofx.bundle to C:\\Program Files\\Common Files\\OFX\\Plugins",
+    "V/Win/OFX/Voxelsort.ofx.bundle/Contents/Win64/Voxelsort.ofx": b"ofx",
+    "V/Mac/Voxelsort.dmg": b"x",
+}
+OFX_PLUGINS = r"C:\Program Files\Common Files\OFX\Plugins"
+
+
+def test_ae_and_ofx_instructions_are_both_used(tmp_path):
+    plan = plan_for(tmp_path, VOXEL)
+    assert [p.parent.name for p in plan.instructions] == ["AE", "OFX"]
+    assert [(s.host, s.source.parent.name) for s in plan.steps] == [("ae", "AE"), ("ofx", "OFX")]
+    assert actions(plan) == [("copy", "Voxelsort.aex", "abs", MEDIACORE),
+                             ("copy", "Voxelsort.ofx.bundle", "abs", OFX_PLUGINS)]
+    assert plan.hosts == {"ae", "ofx"} and plan.warnings == []
+    assert actions(plan.only({"ae"})) == [("copy", "Voxelsort.aex", "abs", MEDIACORE)]
+
+
+def test_ofx_destination_is_not_flagged_as_strange(tmp_path):
+    plan = plan_for(tmp_path, VOXEL)
+    ofx_action = plan.only({"ofx"}).actions[0]
+    assert [odd for _, _, odd, _ in core.action_targets(ofx_action, [])] == [False]
+
+
+def test_ofx_bundle_without_instruction_goes_to_ofx_folder(tmp_path):
+    plan = plan_for(tmp_path, {"P/Fx.aex": b"x", "P/Fx.ofx.bundle/Contents/Win64/Fx.ofx": b"x"})
+    got = {(s.host, a.item.name, a.dest.path) for s in plan.steps for a in s.actions}
+    assert got == {("ae", "Fx.aex", MEDIACORE), ("ofx", "Fx.ofx.bundle", core.OFX_DIR)}
+
+
+def test_identical_instructions_are_used_once(tmp_path):
+    text = "Copy Fx.aex to " + MEDIACORE
+    plan = plan_for(tmp_path, {"A/read.txt": text, "B/read.txt": text, "A/Fx.aex": b"x"})
+    assert len(plan.instructions) == 1 and len(plan.actions) == 1
+
+
+def test_install_without_ofx_skips_ofx_part(tmp_path, monkeypatch):
+    monkeypatch.setattr(core, "LOG_FILE", tmp_path / "log.txt")
+    plan = plan_for(tmp_path, VOXEL)
+    sandbox = tmp_path / "sandbox"
+    assert core.execute(plan.only({"ae"}), RecordingUI(), ae_roots=[], sandbox=str(sandbox))
+    assert (core.sandboxed(Path(MEDIACORE), str(sandbox)) / "Voxelsort.aex").exists()
+    assert not core.sandboxed(Path(OFX_PLUGINS), str(sandbox)).exists()
+
+
+def test_roundtrip_keeps_host_and_source(tmp_path):
+    plan = plan_for(tmp_path, VOXEL)
+    again = core.Plan.from_dict(plan.to_dict())
+    assert [(s.host, s.source) for s in again.steps] == [(s.host, s.source) for s in plan.steps]
+    assert again.instructions == plan.instructions
+
+
 # ---------------------------------------------------------------- выбор инструкции
 
 def test_without_instruction_installs_by_file_type(tmp_path):
