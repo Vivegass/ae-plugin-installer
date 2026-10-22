@@ -555,7 +555,21 @@ def analyze(archive: Path, root: Path):
             if d:
                 step.actions.append(Action(action_kind(it), it, d))
         plan.steps.append(step)
+        # без инструкции установщик сами не запускаем — только сообщаем, что он есть
+        for it in unmentioned_installers(items, payload):
+            plan.warnings.append(f"в архиве есть установщик «{it.relative_to(root)}» — инструкции к нему нет; "
+                                 "если это установщик плагина, запустите его вручную («Открыть распакованное»)")
     return plan
+
+
+def unmentioned_installers(items, payload, limit=5):
+    """.exe/.msi из архива, кроме деинсталляторов и файлов внутри самих плагинов (CEP-панели и т.п.)."""
+    bundles = [p for p in payload if p.is_dir()]
+    found = [it for it in items
+             if it.is_file() and it.suffix.lower() in INSTALLER_EXT and not UNINSTALL_RE.search(it.name)
+             and not any(b in it.parents for b in bundles)]
+    found.sort(key=lambda p: (len(p.parts), p.name.lower()))  # сначала лежащие ближе к корню
+    return found[:limit]
 
 
 def action_verb(a: Action):

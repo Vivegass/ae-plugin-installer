@@ -216,6 +216,25 @@ def test_without_instruction_installs_by_file_type(tmp_path):
     assert "инструкция не найдена" in plan.warnings[0]
 
 
+def test_installer_without_instruction_is_reported_not_run(tmp_path):
+    plan = plan_for(tmp_path, {
+        "Bundle/Tool.jsx": "// script",
+        "Bundle/Setup x64.exe": b"x",
+        "Bundle/uninstall.exe": b"x",
+        "Bundle/Panel/CSXS/manifest.xml": "<ExtensionManifest/>",
+        "Bundle/Panel/server/python.exe": b"x",
+    })
+    assert all(a.kind != "run" for a in plan.actions)  # без инструкции ничего не запускаем
+    notes = [w for w in plan.warnings if "установщик" in w]
+    assert len(notes) == 1 and "Setup x64.exe" in notes[0]
+
+
+def test_installer_only_archive_has_no_actions_but_a_note(tmp_path):
+    plan = plan_for(tmp_path, {"P/Plugin_Setup.msi": b"x"})
+    assert plan.actions == []
+    assert any("Plugin_Setup.msi" in w for w in plan.warnings)
+
+
 def test_nfo_is_read_and_steps_may_start_from_zero(tmp_path):
     plan = plan_for(tmp_path, {
         "R/VR.nfo": "\tTool 1.0 (Win64)\n\n\tInstallation sequence\n\t0. install Maxon App\n\t1. install Tool\n",
