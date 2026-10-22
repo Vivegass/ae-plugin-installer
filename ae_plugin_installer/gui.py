@@ -198,7 +198,20 @@ def _glyph_clear(path):
     path.lineTo(13, 20)
 
 
-GLYPHS = {"import": _glyph_import, "add": _glyph_add, "trash": _glyph_trash, "clear": _glyph_clear}
+def _glyph_folder(path):
+    path.moveTo(3.5, 18.5)
+    path.lineTo(3.5, 5.5)
+    path.lineTo(9.5, 5.5)
+    path.lineTo(11.5, 8)
+    path.lineTo(20.5, 8)
+    path.lineTo(20.5, 18.5)
+    path.closeSubpath()
+    path.moveTo(3.5, 11)
+    path.lineTo(20.5, 11)
+
+
+GLYPHS = {"import": _glyph_import, "add": _glyph_add, "trash": _glyph_trash, "clear": _glyph_clear,
+          "folder": _glyph_folder}
 
 
 def line_pixmap(kind, size, color, stroke=1.4):
@@ -703,6 +716,14 @@ class MainWindow(QMainWindow):
 
     def _build_plan_panel(self):
         p = self.plan_panel = Panel("План установки")
+        self.btn_open = QPushButton("Открыть распакованное")
+        self.btn_open.setObjectName("Flat")
+        self.btn_open.setIcon(line_icon("folder"))
+        self.btn_open.setToolTip("Открыть в Проводнике распакованный архив — для ручной установки.\n"
+                                 "Это временная папка: она удаляется, когда архив убирают из списка "
+                                 "или закрывают программу.")
+        self.btn_open.clicked.connect(self.open_extracted)
+        p.header.addWidget(self.btn_open)
         self.plan_view = QTextBrowser()
         self.plan_view.setOpenLinks(False)
         self.plan_view.document().setDocumentMargin(14)
@@ -934,6 +955,7 @@ class MainWindow(QMainWindow):
         self.btn_install_all.setEnabled(not busy and any(e.status == "ready" for e in self.entries.values()))
         self.btn_remove.setEnabled(not busy and cur is not None)
         self.btn_clear.setEnabled(not busy and bool(self.entries))
+        self.btn_open.setEnabled(cur is not None and cur.tmp is not None and cur.tmp.exists())
 
     def ae_roots(self):
         return [Path(p) for p in (self.ae_combo.currentData() or [])]
@@ -1037,6 +1059,23 @@ class MainWindow(QMainWindow):
                              f"margin-left:{indent}'>{prefix}{text}</div>")
         sb = self.log_view.verticalScrollBar()
         sb.setValue(sb.maximum())
+
+    def open_extracted(self):
+        """Показывает распакованный архив в Проводнике: с выделенной инструкцией, если она есть."""
+        e = self._current()
+        if not e or not e.tmp or not e.tmp.exists():
+            return
+        if e.plan and e.plan.instruction and e.plan.instruction.exists():
+            subprocess.Popen(["explorer", "/select,", str(e.plan.instruction)])
+            return
+        folder = e.tmp
+        # пропускаем обёртки вида Plugin_v1\Plugin_v1\ — папки, где лежит только одна папка
+        while True:
+            children = list(folder.iterdir())
+            if len(children) != 1 or not children[0].is_dir():
+                break
+            folder = children[0]
+        os.startfile(folder)
 
     def open_log_file(self):
         f = core.LOG_FILE if not self.sandbox else Path(self.sandbox) / "install_log.txt"
