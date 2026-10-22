@@ -75,11 +75,13 @@ def describe(a: Action, plan: Plan, ae_roots):
     if not targets:
         return f"{C_RED}скопировать {name} → After Effects не найден!{C_RESET}"
     lines = []
-    for t, exists, odd in targets:
+    for t, exists, odd, missing in targets:
         note = ""
         if exists:
             what = "файлы будут перезаписаны" if a.item.is_dir() else "будет заменён"
             note = f" {C_YELLOW}(уже есть — {what}){C_RESET}"
+        if missing:
+            note += f" {C_YELLOW}(папки нет — будет создана){C_RESET}"
         if odd:
             note += f" {C_RED}⚠ папка не похожа на папку Adobe!{C_RESET}"
         guessed = f" {C_DIM}(по типу файла){C_RESET}" if a.dest.guessed else ""

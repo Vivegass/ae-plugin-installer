@@ -96,6 +96,28 @@ def test_russian_cp1251_with_path_inside_sentence(tmp_path):
     ]
 
 
+@pytest.mark.parametrize("line", [
+    "- `" + MEDIACORE + "`",                # Markdown: путь в обратных кавычках (Photo Mosaic)
+    "**" + MEDIACORE + "**",                # выделение жирным
+    "'" + MEDIACORE + "'",                  # одинарные кавычки
+    "«" + MEDIACORE + "».",                 # ёлочки и точка в конце предложения
+])
+def test_path_wrapped_in_markup_or_quotes(tmp_path, line):
+    plan = plan_for(tmp_path, {
+        "Win/read.txt": "**Installation Instructions**\n"
+                        "Copy the **PhotoMosaic.aex** file to the following path:\n" + line + "\n",
+        "Win/PhotoMosaic.aex": b"x",
+    })
+    assert actions(plan) == [("copy", "PhotoMosaic.aex", "abs", MEDIACORE)]
+
+
+def test_plan_marks_missing_destination_folder(tmp_path):
+    plan = plan_for(tmp_path, {"read.txt": "Copy Fx.aex to " + str(tmp_path / "no such folder"),
+                               "Fx.aex": b"x"})
+    [(_, exists, _, missing)] = core.action_targets(plan.actions[0], [])
+    assert missing and not exists
+
+
 def test_file_mentioned_without_extension(tmp_path):
     plan = plan_for(tmp_path, {
         "Win/read.txt": "Simply copy the ScaleUp plug-in into the following plug-in directory:\n" + MEDIACORE,

@@ -1032,13 +1032,15 @@ class MainWindow(QMainWindow):
             targets = core.action_targets(a, roots)
             if not targets:
                 lines.append(f"<div style='color:{C['red']}; margin-left:18px'>→ After Effects не найден</div>")
-            for t, exists, odd in targets:
+            for t, exists, odd, missing in targets:
                 note = ""
                 if a.dest.guessed:
                     note += f" <span style='color:{C['dim']}'>(по типу файла)</span>"
                 if exists:
                     what = "файлы будут перезаписаны" if a.item.is_dir() else "будет заменён"
                     note += f" <span style='color:{C['yellow']}'>уже есть — {what}</span>"
+                if missing:
+                    note += f" <span style='color:{C['yellow']}'>папки нет — будет создана</span>"
                 if odd:
                     note += f" <span style='color:{C['red']}'>⚠ папка не похожа на папку Adobe</span>"
                 lines.append(f"<div style='margin-left:18px'><span style='color:{C['dim']}'>→</span> "

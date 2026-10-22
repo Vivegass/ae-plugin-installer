@@ -35,10 +35,11 @@ VERB_RE = re.compile(
     r"cop(?:y|ie)|move|paste|place|put|drag|install|extract|unzip|run|launch|"
     r"скопир|копир|перемест|вставь|помест|перетащ|установ|распак|запуст", re.I)
 LABEL_RE = re.compile(r"^\s*(win(?:dows)?|pc|mac(?:\s*os)?(?:\s*x)?|osx)\s*[:\-–]\s*", re.I)
-ABS_RE = re.compile(r"(?:%[A-Za-z_]+%|(?<![A-Za-z])[A-Za-z]:)[\\/][^\r\n<>|*?\"]*")
+# обратная кавычка — граница пути: инструкции бывают в Markdown, `C:\...\MediaCore`
+ABS_RE = re.compile(r"(?:%[A-Za-z_]+%|(?<![A-Za-z])[A-Za-z]:)[\\/][^\r\n<>|*?\"`]*")
 AE_REL_RE = re.compile(r"Adobe After Effects|Support Files[\\/]|Program Files", re.I)
 PATH_CUT_RE = re.compile(
-    r"(?<!Adobe)\s+(?:and|then|or|if|after|и|затем|или|если|после)\s+|[,;\"«»“”]|\.\s|\s{2,}|\t", re.I)
+    r"(?<!Adobe)\s+(?:and|then|or|if|after|и|затем|или|если|после)\s+|[,;\"«»“”`]|\.\s|\s{2,}|\t", re.I)
 UNINSTALL_RE = re.compile(r"unin|unist|удал", re.I)
 
 # у собранного exe __file__ лежит во временной папке — журнал пишем рядом с самим exe;
@@ -373,7 +374,8 @@ def split_steps(text: str):
 
 def clean_path(raw: str):
     s = PATH_CUT_RE.split(raw, 1)[0]
-    s = s.rstrip(" .:\\/")
+    # хвосты разметки и кавычек: **C:\...\MediaCore**, 'C:\...', «...»
+    s = s.rstrip(" .:\\/`'\"*«»“”’")
     return s
 
 
@@ -565,10 +567,11 @@ def action_verb(a: Action):
 
 
 def action_targets(a: Action, ae_roots):
-    """Куда попадёт copy/zxp: [(папка, уже_есть, папка_не_похожа_на_Adobe)]."""
+    """Куда попадёт copy/zxp: [(папка, файл_уже_есть, папка_не_похожа_на_Adobe, папки_ещё_нет)].
+    «Папки ещё нет» показывается в плане: так видно и опечатку в пути из инструкции."""
     if not a.dest:
         return []
-    return [(t, a.kind == "copy" and (t / a.item.name).exists(), "adobe" not in str(t).lower())
+    return [(t, a.kind == "copy" and (t / a.item.name).exists(), "adobe" not in str(t).lower(), not t.exists())
             for t in a.dest.resolve(ae_roots)]
 
 
